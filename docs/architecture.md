@@ -501,7 +501,7 @@ writes "`agy_diag(trace)`" for `agy_diag(action=trace)`.
 ## Headless permission gate (full)
 
 - **Headless permission gate.** agy soft-denies any tool needing confirmation;
-  `--mode accept-edits` does NOT help. The persisted `toolPermission` setting decides (default
+  `--mode accept-edits` / `auto` / `plan` do NOT help. The persisted `toolPermission` setting decides (default
   `request-review`), and **print mode honors it** (escape hatches, hook design: design-notes):
   - **Pre-granted families, as `regex:` rules.** `ensure_verification_commands_allowed` (once at
     MCP-server startup) permanently merges `verification_command_grants()` into
