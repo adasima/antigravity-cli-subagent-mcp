@@ -1,0 +1,34 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock IS committed for binaries (kept on purpose) — do not ignore it.
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Local scratch / agy probe logs / investigation harnesses
+*.log
+/scratch/
+/examples/
+# probe/roller run output (the committed scripts are in scripts/)
+/scripts/*_results.jsonl
+/scripts/*_timeline.jsonl
+.zenith/
+
+# Skill install copies. The canonical agy-guide lives in skills/agy-guide/ and is delivered
+# globally by a junction from ~/.claude/skills/agy-guide; a copy under .claude/skills/ here
+# would ALSO load as a project skill (project scope outranks user scope) and shadow it.
+/.claude/skills/
+
+# Patch/merge artifacts — never commit (Jules agent has committed these by accident)
+*.orig
+*.rej
+*.bak
+/patch.diff

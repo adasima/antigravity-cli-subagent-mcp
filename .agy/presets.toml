@@ -1,0 +1,30 @@
+# This repo's own house rules for agy sub-agents. Layered on top of the built-ins
+# (src/presets/builtin.toml); see the presets section of AGENTS.md.
+#
+# What belongs here is only the judgment a sub-agent gets WRONG without being told —
+# each line below was written after a real run got it wrong. Everything a reader could
+# infer from the surrounding code is dead weight in every prompt, so keep it short.
+
+[house]
+extends = "code"
+# The bridge runs this itself after the run and folds the result into the footer.
+# It is NOT a substitute for the sub-agent's own `cargo test`: it catches the
+# mechanical wiring a finished-looking run leaves behind (a missing re-export, an
+# unused `use` that `-D warnings` would kill), which is what actually broke in the
+# 2026-08-01 edit-only delegation.
+verify = "cargo check --all-targets"
+preamble = """
+This is a Rust MCP bridge. Follow its existing shape rather than inventing one:
+
+- Put the DECISION in a pure function with its own `#[cfg(test)] mod tests` case, and \
+leave the side effects (spawning, reading files, env) in the caller. A new behavior \
+that can only be tested by launching a subprocess is the wrong shape here.
+- Comments carry the reason, not the restatement. Say what BREAKS without the code.
+- NEVER translate, rewrite or reformat a string literal or a comment. Japanese text is \
+byte-identical or untouched — a past run silently turned `変更の可能性` into \
+`変更 of 可能性`.
+- Verify with exactly `cargo test`. Do not try other cargo invocations: each distinct \
+command line spends one of a small number of permission-recovery round-trips.
+- Do not add a dependency, and do not reintroduce defensive code the repo deleted on \
+purpose (a SQLite byte-scan for the answer; a timestamp-based conversation-dir \
+fallback). If the task seems to need one, say so instead of doing it."""
