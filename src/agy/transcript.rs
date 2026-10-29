@@ -1832,7 +1832,10 @@ mod tests {
         let t = parse_full(raw);
         assert_eq!(
             t.artifacts,
-            vec!["C:\\proj\\probe.txt".to_string(), "C:\\proj\\src\\a.rs".to_string()]
+            vec![
+                "C:\\proj\\probe.txt".to_string(),
+                "C:\\proj\\src\\a.rs".to_string()
+            ]
         );
     }
 

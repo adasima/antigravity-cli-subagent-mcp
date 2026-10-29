@@ -41,7 +41,10 @@ mod tests {
     #[test]
     fn what_a_spawned_agy_hands_down_marks_the_server_below() {
         let env = spawned_env();
-        let value = env.iter().find(|(k, _)| *k == DEPTH_ENV).map(|(_, v)| OsStr::new(*v));
+        let value = env
+            .iter()
+            .find(|(k, _)| *k == DEPTH_ENV)
+            .map(|(_, v)| OsStr::new(*v));
         assert!(marked(value));
         // Older binaries handed down a depth number; any value is a mark.
         assert!(marked(Some(OsStr::new("2"))));

@@ -846,7 +846,7 @@ mod tests {
 
     #[test]
     fn test_process_settings_json() {
-        // 未登録パス → 追加され、かつ未知キーが保持される
+        // new path -> appended, unknown keys preserved
         let json = r#"{
   "colorScheme": "tokyo night",
   "trustedWorkspaces": [
@@ -865,17 +865,17 @@ mod tests {
             "write_file(C:\\new\\dir)"
         );
 
-        // 既に含まれるパス → 配列不変 (Noneを返す)
+        // path already present -> array unchanged (returns None)
         let res2 = process_settings_json(&res, &["C:\\new\\dir"]).unwrap();
         assert!(res2.is_none());
 
-        // Windows での大文字小文字違い → 重複追加しない
+        // case-only difference on Windows -> no duplicate
         if cfg!(windows) {
             let res3 = process_settings_json(&res, &["c:\\NEW\\dir"]).unwrap();
             assert!(res3.is_none());
         }
 
-        // 壊れた JSON → 上書きしない (Errを返す)
+        // broken JSON -> never overwritten (returns Err)
         let broken = r#"{ "colorScheme": "tokyo "#;
         assert!(process_settings_json(broken, &["C:\\new"]).is_err());
     }

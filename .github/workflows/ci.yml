@@ -1,14 +1,14 @@
 name: CI
 
 on:
-  # 手動で起動したときだけ走る (Actions の無料枠を食わないため。普段は手元でテストを通してから commit する)
+  # Manual runs only, to save Actions minutes; tests are run locally before each commit
   workflow_dispatch:
 
 jobs:
   check:
     runs-on: windows-latest
-    # ciOs で windows-latest に差し替えても `|| echo` の非ブロッキングが効くよう bash に固定する
-    # (Windows 既定の pwsh はコマンドの終了コードでステップを落とす)
+    # Pinned to bash so a non-blocking `|| echo` keeps working on windows-latest
+    # (the Windows default, pwsh, fails the step on a command's exit code)
     defaults:
       run:
         shell: bash

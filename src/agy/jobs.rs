@@ -38,8 +38,7 @@ pub fn clear_job_waited(id: &str) {
 
 /// Is a live `agy-mcp wait` watching `id`?
 pub fn job_is_waited(id: &str, alive: &dyn Fn(u32) -> bool) -> bool {
-    std::fs::read_to_string(job_waiter_path(id))
-        .is_ok_and(|s| waiter_pid_is_live(&s, alive))
+    std::fs::read_to_string(job_waiter_path(id)).is_ok_and(|s| waiter_pid_is_live(&s, alive))
 }
 
 fn waiter_pid_is_live(contents: &str, alive: &dyn Fn(u32) -> bool) -> bool {
@@ -54,7 +53,7 @@ pub fn reports_dir() -> PathBuf {
 
 /// One background run, mirrored to disk for cross-process `agy-mcp wait`.
 ///
-/// The record doubles as the **dispatch spec** (発注書): it carries the full
+/// The record doubles as the **dispatch spec**: it carries the full
 /// prompt, the workspace and the conversation id, so a job whose supervisor died
 /// with it (session restart, server crash) can be resumed — or re-dispatched
 /// verbatim — without paying tokens to reconstruct what was asked. Everything
@@ -620,7 +619,8 @@ fn make_relative_to_workspace(path_str: &str, workspace: &str) -> String {
     let p_n = norm(path_str);
     let ws_n_trimmed = ws_n.trim_end_matches('/');
     if p_n.starts_with(ws_n_trimmed)
-        && (p_n.len() == ws_n_trimmed.len() || p_n.as_bytes().get(ws_n_trimmed.len()) == Some(&b'/'))
+        && (p_n.len() == ws_n_trimmed.len()
+            || p_n.as_bytes().get(ws_n_trimmed.len()) == Some(&b'/'))
     {
         let slashed = path_str.replace('\\', "/");
         if let Some(rel) = slashed.get(ws_n_trimmed.len()..) {
@@ -999,7 +999,12 @@ mod tests {
         assert!(!t.contains("last seen:"), "{t}");
 
         // With silence and step.
-        let t = format_lost_job_text(Some(45), Some("run_command: cargo test (12s ago)"), &[], hint);
+        let t = format_lost_job_text(
+            Some(45),
+            Some("run_command: cargo test (12s ago)"),
+            &[],
+            hint,
+        );
         assert!(t.contains("no activity for 45s"), "{t}");
         assert!(
             t.contains("\nlast seen: run_command: cargo test (12s ago)\n"),

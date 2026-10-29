@@ -1013,7 +1013,7 @@ pub fn cached_quota_alternative(exhausted_group: &str) -> Option<String> {
 }
 
 /// Estimate burn rate for both quota groups (GEMINI, and Claude's "CLAUDE AND
-/// GPT") from quota snapshots + the runs recorded between them. A "目安" only:
+/// GPT") from quota snapshots + the runs recorded between them. A rough estimate only:
 /// the 5h window is rolling (refills over time) and percentages are
 /// integer-coarse. Lets a caller see Claude's burn before spending sonnet/opus
 /// quota, not just Gemini's.
@@ -1398,7 +1398,7 @@ pub(super) fn format_usage(groups: &[QGroup], credits: Option<u64>) -> Option<St
         return None;
     }
     let width = qg.iter().map(|g| g.name.len()).max().unwrap_or(0);
-    let mut out = vec!["agy サブスク quota（一次ソース: /usage）".to_string()];
+    let mut out = vec!["agy subscription quota (source: /usage)".to_string()];
     for g in qg {
         out.push(format!(
             "  {:<width$}  weekly {} · 5h {}",
@@ -1412,7 +1412,10 @@ pub(super) fn format_usage(groups: &[QGroup], credits: Option<u64>) -> Option<St
     if let Some(c) = credits.filter(|c| *c > 0) {
         out.push(format!("  AI credits: {c}"));
     }
-    out.push("注: weekly/5hが従量ゼロ枠の本体。AI creditsは枠切れ時のみ消費。".to_string());
+    out.push(
+        "Note: weekly/5h are the subscription quota; AI credits are spent only once it runs out."
+            .to_string(),
+    );
     Some(out.join("\n"))
 }
 
@@ -1475,18 +1478,15 @@ pub async fn live_quota() -> String {
         Ok(Ok((usage, credits))) => match quota_from_json(&usage, credits, now_unix()) {
             Some(s) => s,
             None => format!(
-                "{}\n(/usage の JSON を解釈できず proxy にフォールバック)",
+                "{}\n(could not parse the /usage JSON; showing the proxy)",
                 quota_info().await
             ),
         },
         Ok(Err(e)) => format!(
-            "{}\n(/usage 失敗: {e:#} — proxy にフォールバック)",
+            "{}\n(/usage failed: {e:#}; showing the proxy)",
             quota_info().await
         ),
-        Err(_) => format!(
-            "{}\n(/usage 失敗: proxy にフォールバック)",
-            quota_info().await
-        ),
+        Err(_) => format!("{}\n(/usage failed; showing the proxy)", quota_info().await),
     }
 }
 

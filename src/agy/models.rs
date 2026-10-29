@@ -261,7 +261,9 @@ pub fn family_key(label: &str) -> String {
 pub fn list_model_slugs() -> anyhow::Result<Vec<String>> {
     let bin = agy_bin();
     let mut cmd = std::process::Command::new(&bin);
-    cmd.arg("models").stdin(Stdio::null()).envs(crate::nest::spawned_env());
+    cmd.arg("models")
+        .stdin(Stdio::null())
+        .envs(crate::nest::spawned_env());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -321,7 +323,7 @@ pub async fn live_models() -> (String, Vec<String>) {
             (format_models("agy models", &slugs, None), slugs)
         }
         _ => (
-            "モデル一覧を取得できませんでした（agy models 失敗）。".into(),
+            "Could not list models (`agy models` failed).".into(),
             vec![],
         ),
     }
@@ -410,9 +412,9 @@ pub(crate) fn format_models(source: &str, labels: &[String], current: Option<&st
         ))
     });
 
-    let mut out = vec![format!("agy 利用可能モデル（一次ソース: {source}）")];
+    let mut out = vec![format!("agy models (source: {source})")];
     if order.is_empty() {
-        out.push("  (なし)".to_string());
+        out.push("  (none)".to_string());
     }
     for f in &order {
         let same_line: Vec<&&Fam> = order
@@ -438,14 +440,14 @@ pub(crate) fn format_models(source: &str, labels: &[String], current: Option<&st
         ));
     }
     if let Some(c) = current {
-        out.push(format!("  現在選択: {c}"));
+        out.push(format!("  current: {c}"));
     }
     out.push(
-        "指定: model=別名（[ ] の付いた行、常に最新）か名前（左の名前、argon など語でも可。\
-         末尾 -low/-high で effort を固定）"
+        "Pick: model=<alias> (the [ ] rows, always the newest) or a name (left column, or a \
+         word such as argon; a -low/-high suffix pins the effort)"
             .to_string(),
     );
-    out.push("キャッシュ更新済 ~/.agy-mcp/models.json（ask系はこれを参照）".to_string());
+    out.push("Cache updated: ~/.agy-mcp/models.json (agy_sub reads it)".to_string());
     out.join("\n")
 }
 

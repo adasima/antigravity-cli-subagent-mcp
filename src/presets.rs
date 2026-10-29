@@ -532,7 +532,10 @@ mod tests {
     fn agent_is_inherited_overridden_and_validated() {
         let builtin = parse_presets(BUILTIN).unwrap();
         assert_eq!(
-            resolve_preset(&builtin, "research").unwrap().agent.as_deref(),
+            resolve_preset(&builtin, "research")
+                .unwrap()
+                .agent
+                .as_deref(),
             Some("agy-mcp-research")
         );
         assert_eq!(resolve_preset(&builtin, "code").unwrap().agent, None);
@@ -548,7 +551,10 @@ mod tests {
             "a child inherits its parent's agent"
         );
         assert_eq!(
-            resolve_preset(&t, "override_child").unwrap().agent.as_deref(),
+            resolve_preset(&t, "override_child")
+                .unwrap()
+                .agent
+                .as_deref(),
             Some("child-agent"),
             "a child overrides it"
         );

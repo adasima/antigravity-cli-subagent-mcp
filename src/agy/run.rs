@@ -1106,7 +1106,10 @@ fn windows_sdk_bin() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         let pf = std::env::var_os("ProgramFiles(x86)")?;
-        let kits_bin = PathBuf::from(pf).join("Windows Kits").join("10").join("bin");
+        let kits_bin = PathBuf::from(pf)
+            .join("Windows Kits")
+            .join("10")
+            .join("bin");
         if !kits_bin.is_dir() {
             return None;
         }
@@ -1464,7 +1467,7 @@ pub(crate) fn resolve_outcome(
     let has_timeout_msg =
         String::from_utf8_lossy(stderr_raw).contains("timeout waiting for response");
 
-    // stdout を answer の第一候補にするのはクリーンな場合のみ
+    // stdout is the first answer candidate only when it is clean
     let is_stdout_clean =
         stopped.is_none() && exit_err.is_none() && !has_timeout_msg && !clean_stdout.is_empty();
 
@@ -2678,10 +2681,7 @@ mod tests {
             "x64".to_string(),
             "arm64".to_string(),
         ];
-        assert_eq!(
-            newest_sdk_version(&names),
-            Some("10.0.22621.0".to_string())
-        );
+        assert_eq!(newest_sdk_version(&names), Some("10.0.22621.0".to_string()));
         assert_eq!(newest_sdk_version(&["x64".to_string()]), None);
         assert_eq!(newest_sdk_version(&[]), None);
     }
@@ -2690,15 +2690,9 @@ mod tests {
     fn path_with_sdk_bin_appends_only_when_rc_missing() {
         let sdk = Path::new(r"C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64");
         // rc already exists on PATH -> None
-        assert_eq!(
-            path_with_sdk_bin(Some(r"C:\bin"), Some(sdk), true),
-            None
-        );
+        assert_eq!(path_with_sdk_bin(Some(r"C:\bin"), Some(sdk), true), None);
         // sdk_bin is None -> None
-        assert_eq!(
-            path_with_sdk_bin(Some(r"C:\bin"), None, false),
-            None
-        );
+        assert_eq!(path_with_sdk_bin(Some(r"C:\bin"), None, false), None);
         // rc missing on PATH -> appends sdk_bin
         assert_eq!(
             path_with_sdk_bin(Some(r"C:\bin"), Some(sdk), false),
@@ -2988,15 +2982,10 @@ mod tests {
         .is_none());
 
         // (c) conv_id None → None
-        assert!(stopped_without_answer(
-            StopReason::Idle,
-            Some(&steps_t),
-            None,
-            None,
-            180,
-            3600,
-        )
-        .is_none());
+        assert!(
+            stopped_without_answer(StopReason::Idle, Some(&steps_t), None, None, 180, 3600,)
+                .is_none()
+        );
 
         // (d) a partial with empty step_summary and no artifacts → None
         let empty_t = Transcript {
@@ -3960,9 +3949,7 @@ mod tests {
         let prompt = "inspect valid.png, broken.jpg, unreadable.gif, and corrupt.webp";
 
         // Result is None when all images are fine
-        let all_fine_read = |_p: &Path| -> Option<Vec<u8>> {
-            Some(vec![0xFF, 0xD8, 0xFF, 0xD9])
-        };
+        let all_fine_read = |_p: &Path| -> Option<Vec<u8>> { Some(vec![0xFF, 0xD8, 0xFF, 0xD9]) };
         assert_eq!(broken_image_note(prompt, ws, all_fine_read), None);
 
         // Fake read: unreadable is skipped, only broken readable images are named

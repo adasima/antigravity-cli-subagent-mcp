@@ -1327,7 +1327,10 @@ fn footer_bits(
         bits.push(format!("⚠ eol changed: {}", notes.eol_changed.join(", ")));
     }
     if !notes.outside_scope.is_empty() {
-        bits.push(format!("⚠ outside scope: {}", notes.outside_scope.join(", ")));
+        bits.push(format!(
+            "⚠ outside scope: {}",
+            notes.outside_scope.join(", ")
+        ));
     }
     if !also_changed.is_empty() {
         bits.push(format!(
@@ -1505,13 +1508,18 @@ fn rel_under_workspace(ws: &Path, abs: &str) -> Option<String> {
 fn gather_wrote_notes(ws: &Path, artifacts: &[String]) -> (Vec<Option<String>>, Vec<String>) {
     let mut line_notes = Vec::with_capacity(artifacts.len());
     let mut eol_entries = Vec::new();
-    let rels: Vec<String> = artifacts.iter().filter_map(|p| rel_under_workspace(ws, p)).collect();
+    let rels: Vec<String> = artifacts
+        .iter()
+        .filter_map(|p| rel_under_workspace(ws, p))
+        .collect();
     let normalized = agy::git_normalized_paths(ws, &rels);
     for p in artifacts {
         match rel_under_workspace(ws, p) {
             Some(rel) => {
                 let note = agy::wrote_path_note(ws, &rel);
-                if let Some((before, after)) = note.eol_change.filter(|_| !normalized.contains(&rel)) {
+                if let Some((before, after)) =
+                    note.eol_change.filter(|_| !normalized.contains(&rel))
+                {
                     eol_entries.push(format!("{} {before}→{after}", short_path(p, ws)));
                 }
                 line_notes.push(note.line_count);
@@ -1566,11 +1574,7 @@ fn is_abs_path(s: &str) -> bool {
 fn norm_components(p: &Path) -> Vec<String> {
     let s = p.to_string_lossy();
     let s = s.strip_prefix(r"\\?\").unwrap_or(&s).replace('\\', "/");
-    let s = if cfg!(windows) {
-        s.to_lowercase()
-    } else {
-        s
-    };
+    let s = if cfg!(windows) { s.to_lowercase() } else { s };
     let mut out: Vec<String> = Vec::new();
     for seg in s.split('/') {
         match seg {
@@ -1988,7 +1992,7 @@ struct DispatchSpec {
 /// on it with os error 267 (bad current directory), which reads as "agy is not
 /// installed" and sends the caller to set AGY_BIN.
 fn workspace_missing_message(ws: &std::path::Path) -> Option<String> {
-    (!ws.is_dir()).then(|| format!("workspace が存在しない: {}", ws.display()))
+    (!ws.is_dir()).then(|| format!("workspace does not exist: {}", ws.display()))
 }
 
 /// Presets whose answer is only worth having from the model that was asked for.
@@ -3549,7 +3553,7 @@ mod tests {
         assert_eq!(workspace_missing_message(&here), None);
         let gone = here.join("agy-mcp-no-such-dir-8f1c");
         let msg = workspace_missing_message(&gone).unwrap();
-        assert!(msg.starts_with("workspace が存在しない: "), "{msg}");
+        assert!(msg.starts_with("workspace does not exist: "), "{msg}");
     }
 
     #[test]
@@ -4740,7 +4744,18 @@ mod tests {
     #[test]
     fn a_watched_running_job_says_not_to_poll() {
         let line = |waited| {
-            format_job_detail("j1", "agy_sub", "flash", "running", 30, None, "p", Some(5), None, waited)
+            format_job_detail(
+                "j1",
+                "agy_sub",
+                "flash",
+                "running",
+                30,
+                None,
+                "p",
+                Some(5),
+                None,
+                waited,
+            )
         };
         let watched = line(true);
         assert!(watched.contains("no need to poll"), "{watched}");
@@ -4753,7 +4768,7 @@ mod tests {
         let ws = Path::new(r"C:\proj");
         let reports = Path::new(r"C:\reports");
 
-        // 相対の scope
+        // relative scope
         let scope = vec!["src/core".to_string()];
         let artifacts = vec![
             r"C:\proj\src\core\a.rs".to_string(),
@@ -4764,21 +4779,21 @@ mod tests {
             vec![r"C:\proj\src\other\b.rs".to_string()]
         );
 
-        // 相対の artifact
+        // relative artifact
         let rel_artifacts = vec!["src/core/a.rs".to_string(), "other/b.rs".to_string()];
         assert_eq!(
             outside_scope(&rel_artifacts, ws, &scope, reports),
             vec!["other/b.rs".to_string()]
         );
 
-        // 絶対の scope
+        // absolute scope
         let scope_abs = vec![r"C:\proj\src\core".to_string()];
         assert_eq!(
             outside_scope(&artifacts, ws, &scope_abs, reports),
             vec![r"C:\proj\src\other\b.rs".to_string()]
         );
 
-        // 成分の境界 (`src/core` は `src/core2/b.rs` を含まない)
+        // component boundary (`src/core` does not contain `src/core2/b.rs`)
         let artifacts_boundary = vec![
             r"C:\proj\src\core\a.rs".to_string(),
             r"C:\proj\src\core2\b.rs".to_string(),
@@ -4788,7 +4803,7 @@ mod tests {
             vec![r"C:\proj\src\core2\b.rs".to_string()]
         );
 
-        // `\` と `/` の混在
+        // mixed `\` and `/`
         let scope_mixed = vec!["src/core".to_string()];
         let artifacts_mixed = vec![
             "C:/proj/src/core/a.rs".to_string(),
@@ -4800,7 +4815,7 @@ mod tests {
             vec!["C:/proj\\other/c.rs".to_string()]
         );
 
-        // reports 配下は常に範囲内
+        // anything under reports is always in scope
         let artifacts_reports = vec![
             r"C:\reports\findings.md".to_string(),
             "C:/reports/sub/findings2.md".to_string(),
@@ -4811,7 +4826,7 @@ mod tests {
             vec![r"C:\proj\other\c.rs".to_string()]
         );
 
-        // scope が空なら全部が範囲外 (reports 配下は除く)
+        // an empty scope puts everything out of scope (except under reports)
         let artifacts_empty_scope = vec![
             r"C:\proj\src\core\a.rs".to_string(),
             r"C:\proj\other\b.rs".to_string(),
