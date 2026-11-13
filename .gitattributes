@@ -1,0 +1,23 @@
+# Normalise line endings inside the repository.
+#
+# Without this, any tool that rewrites a file with different endings produces a
+# diff touching every line, which buries the real change. An audit of the
+# Jules-authored PRs found a 7-line change presented as 3863 changed lines.
+* text=auto eol=lf
+
+# Binary assets git must never line-ending-convert.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.wav   binary
+*.mp3   binary
+*.flac  binary
+*.ogg   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.wasm  binary
+*.raw   binary
