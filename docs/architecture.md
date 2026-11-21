@@ -9,7 +9,7 @@ in `AGENTS.md` (`Critical invariants`).
 
 **`cargo test`** covers the pure logic — keep changes there covered. By module (under `src/`):
 
-- `main.rs` — `plan_dispatch`, `compaction_note`, `idle_timeout_for`, `run_is_xhigh`;
+- `main.rs` — `plan_dispatch`, `compaction_note`, `subagent_footer_bits`, `idle_timeout_for`, `run_is_xhigh`;
   `strip_defaults`/`normalize_opt_arg`; the `wrote:` / punt-nudge attribution split
   `punt_evidence`/`git_only_paths`/`norm_path_for_match`; `punt_nudge_text`;
   `rel_under_workspace`/`fmt_paths_capped_with_notes`; `looks_stray`/`stray_artifacts`; `outside_scope`; `missing_expected_files`;
@@ -30,7 +30,8 @@ in `AGENTS.md` (`Critical invariants`).
   `clean_user_prompt` (a session head skips the workspace directive),
   `analyze_task_log_content`, `find_test_summary` (cargo suites summed), `strip_broken_encoding`,
   `first_meaningful_line` (GENERIC receipt vs. view_file content),
-  `median_step_interval_s`/`recent_step_timestamps`/`last_step_line` (poll line step pace).
+  `median_step_interval_s`/`recent_step_timestamps`/`last_step_line` (poll line step pace),
+  `subagent_failure`/`subagent_role` (last valid JSON step `ERROR` summary and `subagentDescriptor.role`).
 - `agy/quota.rs` — `parse_usage_json`/`iso8601_utc_to_unix`/`parse_credits_json`, and the 429 cutoff's quota group and
   alternative-group hint `resolve_quota_group`/`quota_group_of` (GPT-OSS → Claude bucket, an argon label or argon-conducted orchestrator → the optional `ARGON_GROUP`, other orchestrators → `GEMINI`; `parse_usage_json` reads `disabled` buckets; `unguarded_groups` names a `/usage` group with no `KNOWN_GROUPS` entry; `slot_of` + `CODENAME_SLOTS` (carbon, argon, neon → `Pro`, hydrogen → `Flash`; row order is the preference, `codename_rank`); `missing_groups` expects only groups some catalog model bills to; the argon group is never "missing" and never `?` in `status_line`)/
   `quota_alternative`/`other_quota_group` (a concrete catalog name: newest Sonnet / newest Flash line); the

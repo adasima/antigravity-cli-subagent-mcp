@@ -1074,6 +1074,89 @@ pub(crate) fn session_compactions(conv_id: &str) -> u32 {
     session_compactions_dir(&brain_dir().join(conv_id))
 }
 
+/// Summary of one direct sub-agent child spawned under a conversation.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SubAgentReport {
+    pub id: String,
+    pub role: Option<String>,
+    pub failure: Option<String>,
+}
+
+/// Inspect a sub-agent's `transcript.jsonl` and return a one-line failure
+/// summary if its last valid JSON step has `status == "ERROR"`.
+pub(crate) fn subagent_failure(transcript: &str) -> Option<String> {
+    let last = transcript
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())?;
+    if last.get("status").and_then(|s| s.as_str()) != Some("ERROR") {
+        return None;
+    }
+    let raw = last
+        .get("error")
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| last.get("content").and_then(|s| s.as_str()))?;
+    let first = raw.lines().next().unwrap_or("").trim();
+    if first.is_empty() {
+        return None;
+    }
+    if first.chars().count() <= 160 {
+        Some(first.to_string())
+    } else {
+        let head: String = first.chars().take(160).collect();
+        Some(format!("{head}…"))
+    }
+}
+
+/// Extract `subagentDescriptor.role` from a `<childId>.json` sub-agent record.
+pub(crate) fn subagent_role(record_json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(record_json).ok()?;
+    v.get("subagentDescriptor")?
+        .get("role")?
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Direct sub-agent children of `conv_dir`, sorted by `id`.
+/// Missing directories or unreadable child files are skipped quietly.
+pub(crate) fn subagent_reports(conv_dir: &Path) -> Vec<SubAgentReport> {
+    let dir = conv_dir.join(".system_generated").join("subagents");
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let brain = conv_dir.parent();
+    let mut reports = Vec::new();
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(id) = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+        else {
+            continue;
+        };
+        let role = std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|raw| subagent_role(&raw));
+        let failure = brain.and_then(|b| {
+            std::fs::read_to_string(transcript_path(&b.join(&id)))
+                .ok()
+                .and_then(|raw| subagent_failure(&raw))
+        });
+        reports.push(SubAgentReport { id, role, failure });
+    }
+    reports.sort_by(|a, b| a.id.cmp(&b.id));
+    reports
+}
+
 /// The model a session is bound to (from the transcript receipt), if readable.
 /// Lets the caller refuse to continue a heavy session on a weak model. Cheap
 /// targeted scan for the receipt line — avoids a full transcript parse just for
@@ -2436,5 +2519,110 @@ mod tests {
         );
         assert_eq!(super::count_compactions(raw), 2);
         assert_eq!(super::count_compactions(""), 0);
+    }
+
+    #[test]
+    fn subagent_failure_reads_last_valid_json_step() {
+        let err_line = r#"{"step_index":2,"source":"MODEL","type":"GENERIC","status":"ERROR","error":"permission check failed for unsandboxed \"Remove-Item x.txt\": user denied permission to run command:\nRemove-Item x.txt\nDo not attempt to circumvent this denial…","content":"Created At: …"}"#;
+        let msg = super::subagent_failure(err_line).expect("ERROR last line yields failure");
+        assert!(msg.starts_with("permission check failed"), "{msg}");
+        assert!(!msg.contains("Do not attempt"), "{msg}");
+
+        // Trailing malformed line is ignored.
+        let with_trailing_garbage = format!("{err_line}\n{{\"step_index\":3,broken\n");
+        let msg2 = super::subagent_failure(&with_trailing_garbage).expect("malformed tail ignored");
+        assert!(msg2.starts_with("permission check failed"), "{msg2}");
+
+        // DONE last line returns None even if an earlier step errored.
+        let recovered = format!(
+            "{err_line}\n{}\n",
+            r#"{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"ok"}"#
+        );
+        assert_eq!(super::subagent_failure(&recovered), None);
+
+        // >160 char error gets capped with trailing ellipsis.
+        let long_err = "x".repeat(200);
+        let long_line = format!(
+            r#"{{"step_index":1,"source":"MODEL","type":"GENERIC","status":"ERROR","error":"{long_err}"}}"#
+        );
+        let capped = super::subagent_failure(&long_line).unwrap();
+        assert_eq!(capped.chars().count(), 161);
+        assert!(capped.ends_with('…'), "{capped}");
+    }
+
+    #[test]
+    fn subagent_role_extracts_non_empty_descriptor_role() {
+        let rec = r#"{"conversationId":"f6e3","subagentDescriptor":{"typeName":"self","role":"Command Probe Worker"},"state":"SUBAGENT_STATE_ALIVE"}"#;
+        assert_eq!(
+            super::subagent_role(rec).as_deref(),
+            Some("Command Probe Worker")
+        );
+        assert_eq!(
+            super::subagent_role(r#"{"subagentDescriptor":{"role":"  "}}"#),
+            None
+        );
+        assert_eq!(super::subagent_role("{}"), None);
+        assert_eq!(super::subagent_role("not json"), None);
+    }
+
+    #[test]
+    fn subagent_reports_collects_direct_children_sorted_by_id() {
+        let brain = std::env::temp_dir().join(format!("agy_test_subagents_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&brain);
+        let parent = brain.join("parent-conv");
+        let sub_dir = parent.join(".system_generated").join("subagents");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+
+        // Child b: healthy
+        std::fs::write(
+            sub_dir.join("child-b.json"),
+            r#"{"conversationId":"child-b","subagentDescriptor":{"role":"Healthy Worker"}}"#,
+        )
+        .unwrap();
+        let b_logs = brain.join("child-b").join(".system_generated").join("logs");
+        std::fs::create_dir_all(&b_logs).unwrap();
+        std::fs::write(
+            b_logs.join("transcript.jsonl"),
+            r#"{"step_index":0,"type":"PLANNER_RESPONSE","status":"DONE","content":"all good"}"#,
+        )
+        .unwrap();
+
+        // Child a: failed (lexicographically before child-b)
+        std::fs::write(
+            sub_dir.join("child-a.json"),
+            r#"{"conversationId":"child-a","subagentDescriptor":{"role":"Probe Worker"}}"#,
+        )
+        .unwrap();
+        let a_logs = brain.join("child-a").join(".system_generated").join("logs");
+        std::fs::create_dir_all(&a_logs).unwrap();
+        std::fs::write(
+            a_logs.join("transcript.jsonl"),
+            r#"{"step_index":1,"type":"GENERIC","status":"ERROR","error":"permission denied"}"#,
+        )
+        .unwrap();
+
+        // Non-json file should be ignored.
+        std::fs::write(sub_dir.join("notes.txt"), "ignore").unwrap();
+
+        let reports = super::subagent_reports(&parent);
+        assert_eq!(reports.len(), 2);
+        assert_eq!(
+            reports[0],
+            super::SubAgentReport {
+                id: "child-a".to_string(),
+                role: Some("Probe Worker".to_string()),
+                failure: Some("permission denied".to_string()),
+            }
+        );
+        assert_eq!(
+            reports[1],
+            super::SubAgentReport {
+                id: "child-b".to_string(),
+                role: Some("Healthy Worker".to_string()),
+                failure: None,
+            }
+        );
+
+        let _ = std::fs::remove_dir_all(&brain);
     }
 }

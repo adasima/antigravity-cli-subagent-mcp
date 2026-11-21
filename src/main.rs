@@ -1343,6 +1343,37 @@ struct FooterNotes {
     /// `missing_expected_files`. Rendered as `✗ expected file missing: …` just
     /// before the verify line.
     missing_expected: Vec<String>,
+    /// Direct sub-agent children spawned during this run and any errors they
+    /// ended on.
+    subagents: Vec<agy::SubAgentReport>,
+}
+
+/// Format footer bits for direct sub-agent children: a count bit plus one
+/// warning bit per child whose transcript ended on an `ERROR` step.
+fn subagent_footer_bits(reports: &[agy::SubAgentReport]) -> Vec<String> {
+    if reports.is_empty() {
+        return Vec::new();
+    }
+    let n = reports.len();
+    let mut bits = vec![if n == 1 {
+        "1 sub-agent".to_string()
+    } else {
+        format!("{n} sub-agents")
+    }];
+    for r in reports {
+        if let Some(failure) = &r.failure {
+            let label = r
+                .role
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| r.id.chars().take(8).collect());
+            bits.push(format!(
+                "⚠ sub-agent '{label}' ended on an error: {failure} — its result did not reach this answer"
+            ));
+        }
+    }
+    bits
 }
 
 /// Build the token-frugal sub-agent footer line (`↳ N steps · wrote: … · also
@@ -1448,6 +1479,7 @@ fn footer_bits(
     if let Some(v) = verify {
         bits.push(v.to_string());
     }
+    bits.extend(subagent_footer_bits(&notes.subagents));
     if ctx_tokens > 0 {
         bits.push(format!("~{} ctx", agy::fmt_tok(ctx_tokens)));
     }
@@ -2646,6 +2678,7 @@ impl AgyServer {
             stray_artifacts: stray_short,
             outside_scope: outside,
             missing_expected,
+            subagents: r.subagents,
         };
         Ok(with_footer(
             text,
@@ -4628,6 +4661,49 @@ mod tests {
         assert!(!no_receipts.contains("wrote:"), "{no_receipts}");
     }
 
+    #[test]
+    fn subagent_footer_bits_formats_count_and_failures() {
+        assert!(subagent_footer_bits(&[]).is_empty());
+
+        let one_ok = vec![agy::SubAgentReport {
+            id: "abcdef123456".to_string(),
+            role: Some("Worker".to_string()),
+            failure: None,
+        }];
+        assert_eq!(subagent_footer_bits(&one_ok), vec!["1 sub-agent"]);
+
+        // A footer appears even when only sub-agent bits exist.
+        let ws = Path::new(r"C:\proj");
+        let notes = FooterNotes {
+            subagents: one_ok,
+            ..FooterNotes::default()
+        };
+        assert_eq!(
+            footer_bits("", &[], &[], &[], true, 0, ws, "", None, &notes).as_deref(),
+            Some("↳ 1 sub-agent")
+        );
+
+        let two_one_err = vec![
+            agy::SubAgentReport {
+                id: "111122223333".to_string(),
+                role: Some("Command Probe Worker".to_string()),
+                failure: Some("permission check failed".to_string()),
+            },
+            agy::SubAgentReport {
+                id: "aaaabbbbcccc".to_string(),
+                role: None,
+                failure: None,
+            },
+        ];
+        assert_eq!(
+            subagent_footer_bits(&two_one_err),
+            vec![
+                "2 sub-agents".to_string(),
+                "⚠ sub-agent 'Command Probe Worker' ended on an error: permission check failed — its result did not reach this answer".to_string(),
+            ]
+        );
+    }
+
     /// Helper: assert that no entry under `properties` carries a `default` key.
     fn assert_no_property_defaults(schema: &schemars::Schema) {
         let props = schema
@@ -4792,6 +4868,7 @@ mod tests {
             stray_artifacts: vec!["docs/REFERENCE.md.old".to_string()],
             outside_scope: vec![],
             missing_expected: vec![],
+            subagents: vec![],
         };
         let f = with_footer(
             "done".to_string(),

@@ -19,7 +19,7 @@ use crate::agy::quota::now_unix;
 use crate::agy::transcript::{
     clip, find_test_summary, read_full_since, read_last_step, read_last_tool_call,
     session_compactions_dir, session_ctx_tokens, step_baseline, strip_broken_encoding,
-    strip_system_blocks, TaskResult, Transcript,
+    strip_system_blocks, subagent_reports, SubAgentReport, TaskResult, Transcript,
 };
 
 pub struct AgyOutcome {
@@ -45,6 +45,9 @@ pub struct AgyOutcome {
     /// Total `CHECKPOINT` compactions recorded in `transcript.jsonl` after this
     /// run (`0` if none or unreadable).
     pub compactions: u32,
+    /// Direct sub-agent children spawned by this conversation and any terminal
+    /// errors they hit.
+    pub subagents: Vec<SubAgentReport>,
     /// Background tasks (e.g. `cargo build`) that completed out-of-band after agy
     /// ended its turn — drained and captured by run_agy. Empty for normal runs.
     pub task_results: Vec<TaskResult>,
@@ -1453,6 +1456,7 @@ pub(crate) fn stopped_without_answer(
         step_summary: t.step_summary.clone(),
         ctx_tokens: conv.map(session_ctx_tokens).unwrap_or(0),
         compactions: conv.map(session_compactions_dir).unwrap_or(0),
+        subagents: conv.map(subagent_reports).unwrap_or_default(),
         task_results: t.task_results.clone(),
         cut_off: true,
     })
@@ -1589,6 +1593,7 @@ pub(crate) fn resolve_outcome(
             step_summary,
             ctx_tokens,
             compactions,
+            subagents: conv.as_deref().map(subagent_reports).unwrap_or_default(),
             task_results,
             cut_off: is_cut_off(stopped, truncation_note.is_some()),
         });
@@ -1673,6 +1678,7 @@ pub(crate) fn resolve_outcome(
                         step_summary: t.step_summary,
                         ctx_tokens,
                         compactions,
+                        subagents: conv.as_deref().map(subagent_reports).unwrap_or_default(),
                         task_results: t.task_results,
                         cut_off: is_cut_off(stopped, truncation_note.is_some()),
                     });
