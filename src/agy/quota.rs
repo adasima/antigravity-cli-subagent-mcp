@@ -1,4 +1,4 @@
-use crate::agy::models::{is_plausible_model_label, slot_of, Slot};
+use crate::agy::models::{conductor_of, is_orchestrator, is_plausible_model_label, slot_of, Slot};
 use crate::agy::paths::{agy_mcp_home, brain_dir, newest_conv_dir};
 use crate::agy::transcript::read_transcript;
 use std::path::PathBuf;
@@ -485,11 +485,18 @@ const KNOWN_GROUPS: [&str; 3] = ["GEMINI", "CLAUDE AND GPT", ARGON_GROUP];
 /// (observed 2026-09-14, repeatedly). Silently logging only what was seen left the
 /// missing group's older reading — a 429-derived 0% — authoritative for hours.
 /// A group whose buckets are all `Disabled` was seen, so it is not missing.
-pub(crate) fn missing_groups(groups: &[QGroup]) -> Vec<&'static str> {
+///
+/// A group no catalog model bills to is not expected either: if agy drops every
+/// Claude (and GPT) model, the "CLAUDE AND GPT" row leaving the page is the catalog
+/// agreeing, not a torn scrape, and warning on every read would be noise. An empty
+/// `labels` (no cache yet) expects every group, the old behavior.
+pub(crate) fn missing_groups(groups: &[QGroup], labels: &[String]) -> Vec<&'static str> {
+    let billed = |k: &str| labels.is_empty() || labels.iter().any(|l| quota_group_of(l) == Some(k));
     KNOWN_GROUPS
         .into_iter()
         .filter(|k| {
             *k != ARGON_GROUP
+                && billed(k)
                 && !groups
                     .iter()
                     .any(|g| g.name == *k && (g.weekly.is_some() || g.five.is_some()))
@@ -606,6 +613,13 @@ pub fn quota_group_of(label: &str) -> Option<&'static str> {
     // the shared GEMINI one (a run on it neither draws from nor is stopped by that).
     if l.contains("gemini") && l.contains("argon") {
         return Some(ARGON_GROUP);
+    }
+    if is_orchestrator(label) {
+        return Some(if conductor_of(label).as_deref() == Some("argon") {
+            ARGON_GROUP
+        } else {
+            group_of_slot(Slot::Flash)
+        });
     }
     match slot_of(label) {
         Some(s) => Some(group_of_slot(s)),
@@ -1424,7 +1438,7 @@ pub(super) fn format_usage(groups: &[QGroup], credits: Option<u64>) -> Option<St
 pub(super) fn quota_from_json(usage: &str, credits: Option<u64>, now: u64) -> Option<String> {
     let groups = parse_usage_json(usage, now)?;
     let mut s = format_usage(&groups, credits)?;
-    let missing = missing_groups(&groups);
+    let missing = missing_groups(&groups, &crate::agy::models::load_models_cache());
     log_quota(&groups, &missing); // accrue burn-rate history (no extra quota)
     for g in &missing {
         s.push('\n');
@@ -1857,7 +1871,7 @@ mod tests {
             {"window":"weekly","remaining_fraction":0.7571,"reset_time":"1970-01-02T00:00:00Z"},
             {"window":"5h","remaining_fraction":0.2714,"reset_time":"1970-01-01T02:00:00Z"}]}]}}}"#;
         let groups = parse_usage_json(claude_only, 3600).expect("parses");
-        let missing = missing_groups(&groups);
+        let missing = missing_groups(&groups, &[]);
         assert_eq!(missing, vec!["GEMINI"]);
         assert!(missing_row_note("GEMINI").contains("GEMINI row not found in usage screen"));
 
@@ -1873,7 +1887,7 @@ mod tests {
         );
         // A full reading reports nothing missing, and a later reading counts again.
         let full = parse_usage_json(USAGE_JSON, 3600).expect("parses");
-        assert!(missing_groups(&full).is_empty());
+        assert!(missing_groups(&full, &[]).is_empty());
         let log = format!(
             "{log}\n{{\"t\":3650,\"groups\":{{\"GEMINI\":{{\"5h\":0.5}}}},\"src\":\"429\"}}"
         );
@@ -2158,7 +2172,7 @@ mod tests {
         let groups_after = parse_usage_json(USAGE_JSON, now_after).expect("parses USAGE_JSON");
         assert_eq!(groups_after[0].weekly_reset, Some(0));
 
-        assert!(missing_groups(&groups).is_empty());
+        assert!(missing_groups(&groups, &[]).is_empty());
 
         let entry = quota_log_entry(&groups, &[], now_before).expect("log entry");
         let gemini_entry = &entry["groups"]["GEMINI"];
@@ -2205,6 +2219,8 @@ mod tests {
         for l in ["gemini-4-argon-high", "Gemini 4 Argon (Medium)"] {
             assert_eq!(quota_group_of(l), Some(ARGON_GROUP), "{l}");
         }
+        assert_eq!(quota_group_of("Orchestrator (Argon)"), Some(ARGON_GROUP));
+        assert_eq!(quota_group_of("Orchestrator (Neon)"), Some("GEMINI"));
         assert_eq!(quota_group_of("gemini-3.8-flash-high"), Some("GEMINI"));
         // The run log's `served` receipt feeds the argon group's own recency check.
         let runs = r#"{"ok":true,"t":200,"served":"Gemini 4 Argon (Medium)","model":"gemini-4-argon-medium"}"#;
@@ -2236,7 +2252,7 @@ mod tests {
             {"name":"Gemini Models","buckets":[{"window":"weekly","remaining_fraction":0.5}]},
             {"name":"Claude and GPT models","buckets":[{"window":"weekly","remaining_fraction":0.5}]}]}}}"#;
         let groups = parse_usage_json(no_argon, 0).unwrap();
-        assert!(missing_groups(&groups).is_empty());
+        assert!(missing_groups(&groups, &[]).is_empty());
         let log = r#"{"t":1,"groups":{"GEMINI":{"weekly":50.0},"CLAUDE AND GPT":{"weekly":50.0}}}"#;
         let line = status_line(log, "", 100).unwrap();
         assert!(!line.contains("ARGON"), "{line}");
@@ -2250,5 +2266,27 @@ mod tests {
     #[test]
     fn test_parse_credits_json() {
         assert_eq!(parse_credits_json(CREDITS_JSON), Some(0));
+    }
+
+    #[test]
+    fn missing_groups_skips_claude_and_gpt_when_catalog_has_none() {
+        let gemini_only = r#"{"command":{"data":{"groups":[
+            {"name":"Gemini Models","buckets":[{"window":"weekly","remaining_fraction":0.5}]}]}}}"#;
+        let groups = parse_usage_json(gemini_only, 0).unwrap();
+
+        let no_claude_gpt = vec![
+            "gemini-4-hydrogen-medium".to_string(),
+            "gemini-3.8-flash-high".to_string(),
+        ];
+        assert!(missing_groups(&groups, &no_claude_gpt).is_empty());
+
+        let with_claude = vec![
+            "gemini-4-hydrogen-medium".to_string(),
+            "claude-sonnet-5-5-high".to_string(),
+        ];
+        assert_eq!(
+            missing_groups(&groups, &with_claude),
+            vec!["CLAUDE AND GPT"]
+        );
     }
 }

@@ -567,6 +567,10 @@ fn resolve_gemini_from(
         .iter()
         .filter(|l| agy::slot_of(l) == Some(slot))
         .collect();
+    // Two codename lines of one version in one slot (Carbon and Argon, both 4): keep
+    // only the preferred one (D38) before the effort ladder runs, so an effort the
+    // preferred line lacks steps down within it instead of jumping lines.
+    let cands = agy::preferred_line(cands, ver_pin);
     pick_version_effort(&cands, effort, ver_pin)
 }
 
@@ -580,7 +584,16 @@ fn resolve_gemini_from(
 /// what the family has); otherwise the slot's floor ([`slot_effort`]) down the
 /// ladder. Nothing matching → [`agy::validate_model_label`]'s catalog-miss message.
 /// An empty catalog passes the name through, as `validate_model_label` does.
+#[cfg(test)]
 fn resolve_by_name(name: &str, labels: &[String]) -> Result<String, String> {
+    resolve_by_name_with(name, labels, &std::collections::BTreeMap::new())
+}
+
+fn resolve_by_name_with(
+    name: &str,
+    labels: &[String],
+    display: &std::collections::BTreeMap<String, String>,
+) -> Result<String, String> {
     if labels.is_empty() || labels.iter().any(|l| l == name) {
         return Ok(name.to_string());
     }
@@ -608,14 +621,31 @@ fn resolve_by_name(name: &str, labels: &[String]) -> Result<String, String> {
             None => agy::family_key(l) == key,
         })
         .collect();
+    if alias_slot.is_some() {
+        // `pro-low` must land on the same line as `pro` (D38).
+        cands = agy::preferred_line(cands, None);
+    }
     if cands.is_empty() {
         let words: Vec<&str> = key.split('-').collect();
+        // An Orchestrator line shares its conductor's word (`neon`), so a bare `neon`
+        // would hit two lines and error; it is matched only when the name says so (D40).
+        let wants_orchestrator = words.contains(&"orchestrator");
+        let matches_tokens = |s: &str| {
+            let fam = agy::family_key(s);
+            let fam_toks: Vec<&str> = fam.split('-').collect();
+            words.iter().all(|w| fam_toks.contains(w))
+        };
         let hits: Vec<&String> = labels
             .iter()
             .filter(|l| {
-                let fam = agy::family_key(l);
-                let fam_toks: Vec<&str> = fam.split('-').collect();
-                words.iter().all(|w| fam_toks.contains(w))
+                wants_orchestrator
+                    || (!agy::is_orchestrator(l)
+                        && !display
+                            .get(l.as_str())
+                            .is_some_and(|d| agy::is_orchestrator(d)))
+            })
+            .filter(|l| {
+                matches_tokens(l) || display.get(l.as_str()).is_some_and(|d| matches_tokens(d))
             })
             .collect();
         let mut lines: Vec<String> = hits.iter().map(|l| line(&agy::family_key(l))).collect();
@@ -679,11 +709,13 @@ fn name_effort(name: &str) -> Option<Effort> {
 /// believed — the same shape as [`resolve_sub_refreshing`], and for the same reason:
 /// the cache self-heals, so the caller is never told to go refresh it (invariant #4).
 async fn resolve_by_name_refreshing(name: &str) -> Result<String, String> {
-    if let Ok(hit) = resolve_by_name(name, &agy::load_models_cache()) {
+    if let Ok(hit) =
+        resolve_by_name_with(name, &agy::load_models_cache(), &agy::load_model_labels())
+    {
         return Ok(hit);
     }
     let refreshed = agy::refresh_models_cache().await;
-    resolve_by_name(name, &agy::load_models_cache()).map_err(|e| {
+    resolve_by_name_with(name, &agy::load_models_cache(), &agy::load_model_labels()).map_err(|e| {
         let note = if refreshed {
             "the model list was auto-refreshed for this call"
         } else {
@@ -804,13 +836,56 @@ fn resolve_sub(model: SubModel, effort: Effort) -> Result<(String, agy::Slot), S
             "opus",
         ),
     };
-    opt.map(|l| (l, slot)).ok_or_else(|| {
-        format!(
-            "no '{name}' model in the cached list — Google may have rotated the model names. \
-             Run agy_diag(action=live, what=models) to refresh, then retry; or pass model_label \
-             with an exact slug from that list."
-        )
-    })
+    opt.map(|l| (l, slot))
+        .ok_or_else(|| alias_miss_text(name, slot, &agy::load_models_cache()))
+}
+
+/// The refusal when an alias resolves to nothing: which alias, whether agy dropped
+/// the whole vendor (no Claude model left at all), and the model lines it does have,
+/// so the caller can name one. It never says to refresh the list — the caller
+/// ([`resolve_sub_refreshing`]) already re-listed and says so (invariant #4). Pure.
+fn alias_miss_text(name: &str, slot: agy::Slot, labels: &[String]) -> String {
+    let gone = slot == agy::Slot::Claude
+        && !labels
+            .iter()
+            .any(|l| agy::slot_of(l) == Some(agy::Slot::Claude));
+    let why = if gone {
+        " — agy no longer lists any Claude model"
+    } else {
+        ""
+    };
+    let mut bases: Vec<String> = labels.iter().map(|l| agy::base_slug(l)).collect();
+    bases.sort();
+    bases.dedup();
+    let have = if bases.is_empty() {
+        "(empty)".to_string()
+    } else {
+        bases.join(", ")
+    };
+    format!("no '{name}' model in agy's model list{why}. Pass model=<name> from: {have}.")
+}
+
+/// `agy_diag(status)`'s permissions line. The gate is ours only while agy's own
+/// `toolPermission` is not `always-proceed`: with that setting agy runs every tool
+/// call itself, so "gate" would claim a check that never happens — unless the
+/// PreToolUse guard is registered (`setup` posture `guarded`). Pure.
+fn permissions_status_line(
+    mode: agy::PermissionMode,
+    guarded: bool,
+    tool_permission: Option<&str>,
+) -> &'static str {
+    match (mode, guarded, tool_permission) {
+        (agy::PermissionMode::Trusted, _, _) => {
+            "\npermissions: TRUSTED — agy runs with --dangerously-skip-permissions (AGY_PERMISSIONS)"
+        }
+        (agy::PermissionMode::Gate, true, _) => {
+            "\npermissions: guarded — agy's gate is off; the PreToolUse guard refuses destructive and outward-facing commands (policy.toml)"
+        }
+        (agy::PermissionMode::Gate, false, Some("always-proceed")) => {
+            "\npermissions: gate OFF — agy's toolPermission is always-proceed and no guard is installed, so every tool call runs"
+        }
+        (agy::PermissionMode::Gate, false, _) => "\npermissions: gate (families pre-granted)",
+    }
 }
 
 /// [`resolve_sub`], but a miss re-reads the model list from agy first and tries
@@ -926,7 +1001,7 @@ fn claude_variant_from_label(label: &str) -> ClaudeModel {
 /// an unreadable session or a line that left the catalog (agy's own default then).
 fn resume_keep_model(dir: &Path) -> Option<String> {
     let label = agy::session_model(dir)?;
-    resume_keep_from(&label, &agy::load_models_cache())
+    resume_keep_from_with(&label, &agy::load_models_cache(), &agy::load_model_labels())
 }
 
 /// Pure core of [`resume_keep_model`]: the served label and the catalog in hand.
@@ -935,8 +1010,35 @@ fn resume_keep_model(dir: &Path) -> Option<String> {
 /// its [`agy::family_key`]: the catalog's slugs of the same family, at the session's
 /// effort. Without this a bare resume fell through to agy's default, Flash. Not in
 /// the catalog → None, the old behavior.
+#[cfg(test)]
 fn resume_keep_from(label: &str, labels: &[String]) -> Option<String> {
+    resume_keep_from_with(label, labels, &std::collections::BTreeMap::new())
+}
+
+fn resume_keep_from_with(
+    label: &str,
+    labels: &[String],
+    display: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
     let effort = effort_from_label(label);
+    // The session's own family first: a slot can hold two lines of one version
+    // (Argon and Carbon), and the slot's pick would move an Argon thread to Carbon.
+    // The slot resolvers below are only for a family that has left the catalog.
+    let fam = agy::family_key(label);
+    let own: Vec<&String> = labels
+        .iter()
+        .filter(|l| agy::family_key(l) == fam)
+        .collect();
+    if let Some(hit) = pick_version_effort(&own, effort, None) {
+        return Some(hit);
+    }
+    if let Some(hit) = labels.iter().find(|slug| {
+        display
+            .get(slug.as_str())
+            .is_some_and(|d| agy::family_key(d) == fam)
+    }) {
+        return Some(hit.clone());
+    }
     match agy::slot_of(label) {
         // Flash is pinned too: agy's bare-resume default is not Flash any more (a cut-off
         // Hydrogen run was resumed on Argon), and the slot holds two lines to tell apart.
@@ -948,14 +1050,8 @@ fn resume_keep_from(label: &str, labels: &[String]) -> Option<String> {
         Some(agy::Slot::Claude) => {
             resolve_claude_in(labels, claude_variant_from_label(label), effort)
         }
-        None => {
-            let fam = agy::family_key(label);
-            let cands: Vec<&String> = labels
-                .iter()
-                .filter(|l| agy::family_key(l) == fam)
-                .collect();
-            pick_version_effort(&cands, effort, None)
-        }
+        // Slot-less and its family gone (checked above): agy's own default.
+        None => None,
     }
 }
 
@@ -2223,21 +2319,22 @@ impl AgyServer {
                     .as_deref()
                     .and_then(agy::resolve_conv_dir)
                     .and_then(|dir| agy::read_conv_model(&dir));
+                let quota_model = model.as_deref().map(agy::quota_label);
                 let learned = agy::record_quota_wall(
-                    model.as_deref(),
+                    quota_model.as_deref(),
                     conv_model.as_deref(),
                     &format!("{e:#}"),
                 );
                 // Don't also guess at a probable cause when we just recorded the
                 // real one; the receipt is already in the error.
-                let effective_model = model.as_deref().or(conv_model.as_deref());
+                let effective_model = quota_model.as_deref().or(conv_model.as_deref());
                 let mut e = match (learned, agy::quota_probable_cause(effective_model)) {
                     (false, Some(hint)) => e.context(hint),
                     _ => e,
                 };
                 if learned {
                     if let Some(group) =
-                        agy::resolve_quota_group(model.as_deref(), conv_model.as_deref())
+                        agy::resolve_quota_group(quota_model.as_deref(), conv_model.as_deref())
                     {
                         // Hours or days: the receipt can't say, a scraped reading can.
                         if let Some(note) = agy::wall_window_note(group) {
@@ -3035,7 +3132,12 @@ impl AgyServer {
             if let Some(why) = agy::agy_down() {
                 return Err(ErrorData::internal_error(agy_down_text(&why), None));
             }
-            if let Some(group) = model.as_deref().and_then(agy::quota_group_of) {
+            if let Some(group) = model
+                .as_deref()
+                .map(agy::quota_label)
+                .as_deref()
+                .and_then(agy::quota_group_of)
+            {
                 if let Some(msg) = agy::cached_quota_unavailable(group) {
                     return Err(ErrorData::internal_error(msg, None));
                 }
@@ -3302,12 +3404,11 @@ impl AgyServer {
                 ));
                 // Whether this machine's sub-agents run un-gated is invisible from the
                 // outside and changes what a run is allowed to do, so it is stated.
-                s.push_str(match agy::permission_mode() {
-                    agy::PermissionMode::Gate => "\npermissions: gate (families pre-granted)",
-                    agy::PermissionMode::Trusted => {
-                        "\npermissions: TRUSTED — agy runs with --dangerously-skip-permissions (AGY_PERMISSIONS)"
-                    }
-                });
+                s.push_str(permissions_status_line(
+                    agy::permission_mode(),
+                    setup::assess(&setup::read_state()).0 == setup::Posture::Guarded,
+                    setup::agy_tool_permission().as_deref(),
+                ));
                 let (skills, ws_mcp) = match ws.as_deref() {
                     Some(w) => {
                         let roots = agy::skill_roots(Some(w));
@@ -4991,5 +5092,185 @@ mod tests {
             f.contains("✗ expected file missing: a.md, b.md · ✓ verify: cargo check ok"),
             "{f}"
         );
+    }
+
+    fn real_catalog_2026_11() -> Vec<String> {
+        [
+            "gemini-4-neon-low",
+            "gemini-4-neon-medium",
+            "gemini-4-neon-high",
+            "gemini-4-neon-xhigh",
+            "gemini-4-argon-low",
+            "gemini-4-argon-medium",
+            "gemini-4-argon-high",
+            "gemini-4-hydrogen-low",
+            "gemini-4-hydrogen-medium",
+            "gemini-4-hydrogen-high",
+            "gemini-4-hydrogen-xhigh",
+            "gemini-pro-orchestrator-neon",
+            "gemini-pro-orchestrator-g1-pro",
+            "gemini-3.8-flash-low",
+            "gemini-3.8-flash-medium",
+            "gemini-3.8-flash-high",
+            "claude-opus-5-5-low",
+            "claude-opus-5-5-medium",
+            "claude-opus-5-5-high",
+            "claude-sonnet-5-5-low",
+            "claude-sonnet-5-5-medium",
+            "claude-sonnet-5-5-high",
+            "gpt-oss-120b-medium",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
+    }
+
+    #[test]
+    fn real_catalog_resolves_neon_orchestrators_and_pro_without_leaking() {
+        let cat = real_catalog_2026_11();
+
+        let neon = resolve_by_name("neon", &cat).expect("neon should resolve");
+        assert!(neon.starts_with("gemini-4-neon-"), "{neon}");
+
+        assert_eq!(
+            resolve_by_name("orchestrator-neon", &cat).as_deref(),
+            Ok("gemini-pro-orchestrator-neon")
+        );
+
+        let err = resolve_by_name("orchestrator", &cat).unwrap_err();
+        assert!(
+            err.contains("gemini-pro-orchestrator-neon")
+                && err.contains("gemini-pro-orchestrator-g1-pro"),
+            "{err}"
+        );
+
+        assert_eq!(
+            resolve_gemini_from(&cat, agy::Slot::Pro, Effort::High, None).as_deref(),
+            Some("gemini-4-argon-high")
+        );
+
+        let no_argon: Vec<String> = cat.into_iter().filter(|s| !s.contains("argon")).collect();
+        let pro_fallback = resolve_gemini_from(&no_argon, agy::Slot::Pro, Effort::High, None);
+        assert!(
+            !pro_fallback.as_deref().is_some_and(agy::is_orchestrator),
+            "Pro slot must never resolve to an orchestrator: {pro_fallback:?}"
+        );
+        // D42: with Argon gone, `pro` falls to Neon.
+        assert_eq!(pro_fallback.as_deref(), Some("gemini-4-neon-high"));
+    }
+
+    #[test]
+    fn display_labels_resolve_and_resume_orchestrator_by_conductor() {
+        let cat = real_catalog_2026_11();
+        let display = std::collections::BTreeMap::from([
+            (
+                "gemini-pro-orchestrator-g1-pro".to_string(),
+                "Orchestrator (Argon)".to_string(),
+            ),
+            (
+                "gemini-pro-orchestrator-neon".to_string(),
+                "Orchestrator (Neon)".to_string(),
+            ),
+        ]);
+
+        assert_eq!(
+            resolve_by_name_with("orchestrator-argon", &cat, &display).as_deref(),
+            Ok("gemini-pro-orchestrator-g1-pro")
+        );
+        let argon = resolve_by_name_with("argon", &cat, &display).expect("argon should resolve");
+        assert!(argon.starts_with("gemini-4-argon-"), "{argon}");
+
+        assert_eq!(
+            resume_keep_from_with("Orchestrator (Argon)", &cat, &display).as_deref(),
+            Some("gemini-pro-orchestrator-g1-pro")
+        );
+        assert_eq!(
+            resume_keep_from_with("Orchestrator (Neon)", &cat, &display).as_deref(),
+            Some("gemini-pro-orchestrator-neon")
+        );
+    }
+
+    #[test]
+    fn carbon_outranks_argon_in_pro_slot_while_resume_keeps_argon() {
+        let mut with_carbon = real_catalog_2026_11();
+        with_carbon.extend(
+            [
+                "gemini-4-carbon-low",
+                "gemini-4-carbon-medium",
+                "gemini-4-carbon-high",
+            ]
+            .into_iter()
+            .map(String::from),
+        );
+        assert_eq!(
+            resolve_gemini_from(&with_carbon, agy::Slot::Pro, Effort::High, None).as_deref(),
+            Some("gemini-4-carbon-high")
+        );
+        assert_eq!(
+            resume_keep_from("Gemini 4 Argon (High)", &with_carbon).as_deref(),
+            Some("gemini-4-argon-high")
+        );
+        // `pro-low` and the `[pro]` tag follow the same line as `pro`.
+        assert_eq!(
+            resolve_by_name("pro-low", &with_carbon).as_deref(),
+            Ok("gemini-4-carbon-low")
+        );
+        let listing = agy::format_models("test", &with_carbon, None);
+        let tagged: Vec<&str> = listing.lines().filter(|l| l.contains("[pro]")).collect();
+        assert_eq!(tagged.len(), 1, "{listing}");
+        assert!(tagged[0].contains("gemini-4-carbon"), "{listing}");
+
+        let mut carbon_medium_only = real_catalog_2026_11();
+        carbon_medium_only.push("gemini-4-carbon-medium".to_string());
+        assert_eq!(
+            resolve_gemini_from(&carbon_medium_only, agy::Slot::Pro, Effort::High, None).as_deref(),
+            Some("gemini-4-carbon-medium")
+        );
+    }
+
+    #[test]
+    fn permissions_line_says_when_agy_switched_the_gate_off() {
+        use agy::PermissionMode::{Gate, Trusted};
+        assert!(permissions_status_line(Gate, false, Some("always-proceed")).contains("gate OFF"));
+        assert!(permissions_status_line(Gate, true, Some("always-proceed")).contains("guarded"));
+        assert!(
+            permissions_status_line(Gate, false, Some("request-review")).contains("gate (families")
+        );
+        assert!(permissions_status_line(Gate, false, None).contains("gate (families"));
+        assert!(permissions_status_line(Trusted, true, Some("always-proceed")).contains("TRUSTED"));
+    }
+
+    #[test]
+    fn flash_slot_skips_hydrogen_lite_tier() {
+        let mut cat = real_catalog_2026_11();
+        cat.extend(
+            [
+                "gemini-4-hydrogen-lite-low",
+                "gemini-4-hydrogen-lite-medium",
+                "gemini-4-hydrogen-lite-high",
+            ]
+            .into_iter()
+            .map(String::from),
+        );
+        let picked = resolve_gemini_from(&cat, agy::Slot::Flash, Effort::Medium, None).unwrap();
+        assert!(!picked.contains("lite"), "{picked}");
+    }
+
+    #[test]
+    fn alias_miss_text_notes_when_claude_is_absent() {
+        let cat = real_catalog_2026_11();
+        let no_claude: Vec<String> = cat
+            .iter()
+            .filter(|s| !s.starts_with("claude-"))
+            .cloned()
+            .collect();
+
+        let miss = alias_miss_text("sonnet", agy::Slot::Claude, &no_claude);
+        assert!(miss.contains("no longer lists any Claude model"), "{miss}");
+        assert!(miss.contains("gemini-4-neon"), "{miss}");
+        assert!(!miss.contains("agy_diag"), "{miss}");
+
+        let pro_miss = alias_miss_text("pro", agy::Slot::Pro, &cat);
+        assert!(!pro_miss.contains("no longer"), "{pro_miss}");
     }
 }

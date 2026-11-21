@@ -25,7 +25,9 @@ model.
 | model | effort | note | evidence |
 |---|---|---|---|
 | `gemini-4-hydrogen` `[flash]` | medium (low·medium·high·xhigh) | The default (Flash slot since 2026-11-13, replacing 3.8 Flash; shares the GEMINI bucket). Medium is the floor that catches unstated consequences; high and xhigh cost more time for no better result | measured |
-| `gemini-4-argon` `[pro]` | high (low·medium·high) | Read-and-think line: let it plan, let flash do. Own weekly bucket. Quality and context size unmeasured | wiring only |
+| `gemini-4-argon` `[pro]` | high (low·medium·high) | Read-and-think line: let it plan, let flash do. Own weekly bucket. An early large model trained before heavy SFT, so it tends to beat later lines at creative work, review and general writing. Quality and context size unmeasured | wiring only |
+| `gemini-4-neon` (by name; `pro` once Argon is gone) | high (low·medium·high·xhigh) | Draws on the shared GEMINI bucket (not Argon's). Call it `neon` while Argon is listed. Reported to beat every Gemini line on benchmarks; for agentic work (code, tool use) pick by benchmark, which means Neon | wiring only |
+| `gemini-pro-orchestrator-neon`, `…-g1-pro` (name only) | — | agy's Orchestrator: a conductor (Neon / Argon) that defines and drives worker sub-agents. Name it with `orchestrator` in the name; a bare `neon` is the plain line. Works headlessly; the Neon one draws on GEMINI. Whether the permission gate holds for its workers is unmeasured | wiring only |
 | `claude-sonnet-5-5` `[sonnet]` | low (low·medium·high) | The Claude bucket's better use; where the quota-wall refusal points when GEMINI is out | wiring only |
 | `claude-opus-5-5` `[opus]` | medium (low·medium·high) | Design review and technical judgment (read-only), prose, consultation. Medium here is about Claude Code's high–xhigh | wiring only |
 
@@ -54,6 +56,8 @@ mean, a name when the model is.
   (opus hits that bucket's wall sooner). Opus 5.5 at the default medium can take a design review
   or a technical judgment: have it read and report (`preset="review"`), and leave the doing to
   flash. It is the second-opinion line when the Argon bucket is out.
+- **If Claude leaves agy's list**, `sonnet`/`opus` are refused with `agy no longer lists any Claude model`
+  and the lines that remain: move that work to flash, and second opinions to Argon.
 
 ## Pinning a version or an effort
 

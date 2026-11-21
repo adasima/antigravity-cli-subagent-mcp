@@ -283,6 +283,18 @@ fn run_self(args: &[&str]) -> anyhow::Result<String> {
     Ok(text)
 }
 
+/// agy's own persisted `toolPermission` (`always-proceed`, `request-review`, …), or
+/// None when unset or unreadable. `agy_diag(status)` reads it so the permissions line
+/// says when agy itself has switched the gate off, which `AGY_PERMISSIONS` cannot see.
+pub(crate) fn agy_tool_permission() -> Option<String> {
+    agy_settings_path()
+        .as_deref()
+        .and_then(read_json)?
+        .get("toolPermission")?
+        .as_str()
+        .map(str::to_string)
+}
+
 fn describe(s: &State) -> String {
     let (posture, warn) = assess(s);
     let mut out = format!("posture: {}\n", posture.name());

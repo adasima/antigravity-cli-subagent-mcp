@@ -15,6 +15,8 @@ use std::path::PathBuf;
 struct ModelsCache {
     fetched_at: u64,
     models: Vec<String>,
+    #[serde(default)]
+    labels: std::collections::BTreeMap<String, String>,
 }
 
 /// Cached model slugs from the last refresh (empty if never fetched).
@@ -23,15 +25,25 @@ pub fn load_models_cache() -> Vec<String> {
     read_models_cache().map(|c| c.models).unwrap_or_default()
 }
 
+/// Cached `slug -> display label` map from the last refresh (empty if never fetched
+/// or written by an older binary without labels).
+pub fn load_model_labels() -> std::collections::BTreeMap<String, String> {
+    read_models_cache().map(|c| c.labels).unwrap_or_default()
+}
+
 fn read_models_cache() -> Option<ModelsCache> {
     serde_json::from_str::<ModelsCache>(&std::fs::read_to_string(models_cache_path()).ok()?).ok()
 }
 
-pub(crate) fn save_models_cache(models: &[String]) {
+pub(crate) fn save_models_cache(
+    models: &[String],
+    labels: &std::collections::BTreeMap<String, String>,
+) {
     let _ = std::fs::create_dir_all(agy_mcp_home());
     let c = ModelsCache {
         fetched_at: now_unix(),
         models: models.to_vec(),
+        labels: labels.clone(),
     };
     let Ok(s) = serde_json::to_string_pretty(&c) else {
         return;
@@ -62,11 +74,21 @@ pub fn models_cache_is_stale(cache: Option<(u64, &[String])>, now: u64) -> bool 
         || models.iter().any(|m| m.contains(' ') || m.contains('('))
 }
 
+/// Also stale when the cache holds slugs from an older binary that did not
+/// record display labels (`labels` empty while `models` is non-empty). Pure.
+pub(crate) fn models_cache_is_stale_entry(cache: Option<(u64, &[String], bool)>, now: u64) -> bool {
+    let Some((fetched_at, models, has_labels)) = cache else {
+        return true;
+    };
+    models_cache_is_stale(Some((fetched_at, models)), now) || (!models.is_empty() && !has_labels)
+}
+
 /// True when the on-disk cache should be refreshed before it is trusted.
 pub fn models_cache_needs_refresh() -> bool {
     let c = read_models_cache();
-    models_cache_is_stale(
-        c.as_ref().map(|c| (c.fetched_at, c.models.as_slice())),
+    models_cache_is_stale_entry(
+        c.as_ref()
+            .map(|c| (c.fetched_at, c.models.as_slice(), !c.labels.is_empty())),
         now_unix(),
     )
 }
@@ -90,11 +112,26 @@ const MODELS_PROBE_TIMEOUT_S: u64 = 15;
 ///
 /// Doubles as the health probe: a missing or broken exe (e.g. a failed upstream
 /// update) fails this call, and the failure is kept for [`agy_down`].
+fn split_model_entries(
+    entries: Vec<(String, Option<String>)>,
+) -> (Vec<String>, std::collections::BTreeMap<String, String>) {
+    let mut slugs = Vec::with_capacity(entries.len());
+    let mut labels = std::collections::BTreeMap::new();
+    for (slug, label) in entries {
+        if let Some(lbl) = label {
+            labels.insert(slug.clone(), lbl);
+        }
+        slugs.push(slug);
+    }
+    (slugs, labels)
+}
+
 pub async fn refresh_models_cache() -> bool {
     let before = load_models_cache();
+    let before_labels = load_model_labels();
     let probe = tokio::time::timeout(
         std::time::Duration::from_secs(MODELS_PROBE_TIMEOUT_S),
-        tokio::task::spawn_blocking(list_model_slugs),
+        tokio::task::spawn_blocking(list_model_entries),
     )
     .await;
     let Ok(res) = probe else {
@@ -109,9 +146,10 @@ pub async fn refresh_models_cache() -> bool {
         *g = down;
     }
     match res {
-        Ok(Ok(slugs)) if !slugs.is_empty() => {
-            save_models_cache(&slugs);
-            slugs != before
+        Ok(Ok(entries)) if !entries.is_empty() => {
+            let (slugs, labels) = split_model_entries(entries);
+            save_models_cache(&slugs, &labels);
+            slugs != before || labels != before_labels
         }
         _ => false,
     }
@@ -146,7 +184,96 @@ pub enum Slot {
 /// successor to the Pro line; `hydrogen` (Gemini 4, agy 1.5.x, 2026-11) to the Flash
 /// line. Adding the next codename is one row here plus a test — until then it is
 /// listed without an alias tag and reached only by name.
-const CODENAME_SLOTS: &[(&str, Slot)] = &[("argon", Slot::Pro), ("hydrogen", Slot::Flash)];
+///
+/// **Row order is the preference** when two codenames share a slot and a version
+/// ([`codename_rank`]): `carbon` (Gemini 4, Ultra/Enterprise only, not yet seen on a
+/// Pro plan) is listed ahead of `argon`, so an Ultra catalog holding both resolves
+/// `pro` to Carbon (D38). The carbon row is a forecast — its real slug is unverified.
+/// `neon` (Gemini 4, GEMINI bucket) is the last Pro row: `pro` reaches it only when
+/// neither Carbon nor Argon is listed at that version (D42); while they are, it is
+/// called by name (D39).
+const CODENAME_SLOTS: &[(&str, Slot)] = &[
+    ("carbon", Slot::Pro),
+    ("argon", Slot::Pro),
+    ("neon", Slot::Pro),
+    ("hydrogen", Slot::Flash),
+];
+
+/// A label's place in [`CODENAME_SLOTS`] (lower = preferred); `usize::MAX` for a
+/// label naming no codename (`gemini-3.8-flash-high`). Pure.
+pub(crate) fn codename_rank(label: &str) -> usize {
+    let l = label.to_ascii_lowercase();
+    CODENAME_SLOTS
+        .iter()
+        .position(|(name, _)| l.contains(name))
+        .unwrap_or(usize::MAX)
+}
+
+/// Narrow one slot's candidates so that, at the version the slot will take (`ver_pin`,
+/// else the newest), only the most preferred codename line is left (D38: Carbon over
+/// Argon when both are 4). Other versions pass through untouched. Shared by every path
+/// that turns a slot into a slug — the alias resolver, `pro-low` in `resolve_by_name`,
+/// and the `[pro]` tag in [`format_models`] — so they cannot disagree. Pure.
+pub(crate) fn preferred_line<'a>(
+    cands: Vec<&'a String>,
+    ver_pin: Option<(u32, u32)>,
+) -> Vec<&'a String> {
+    let target = ver_pin.or_else(|| cands.iter().filter_map(|l| model_version(l)).max());
+    let best = cands
+        .iter()
+        .filter(|l| model_version(l) == target)
+        .map(|l| codename_rank(l))
+        .min();
+    cands
+        .into_iter()
+        .filter(|l| model_version(l) != target || Some(codename_rank(l)) == best)
+        .collect()
+}
+
+/// An agy Orchestrator line (`gemini-pro-orchestrator-neon`, "Orchestrator (Argon)"):
+/// a conductor model that drives cheaper workers. It is in no slot (D40) — its slug
+/// carries `pro`, which would otherwise put it in the Pro slot and let `model=pro`
+/// land on it once argon leaves — and it is matched by name only when the name says
+/// `orchestrator`. Pure.
+pub(crate) fn is_orchestrator(label: &str) -> bool {
+    label.to_ascii_lowercase().contains("orchestrator")
+}
+
+/// Extract the lowercased conductor name from an orchestrator display label,
+/// e.g. `"Orchestrator (Argon)"` -> `Some("argon")`. Returns `None` for
+/// non-orchestrator labels (so `"Gemini 4 Argon (High)"` is not misread) or
+/// labels without parentheses. Pure.
+pub(crate) fn conductor_of(label: &str) -> Option<String> {
+    if !is_orchestrator(label) {
+        return None;
+    }
+    let (_, rest) = label.split_once('(')?;
+    let (inner, _) = rest.split_once(')')?;
+    let word = inner.trim().to_ascii_lowercase();
+    (!word.is_empty()).then_some(word)
+}
+
+/// For an orchestrator slug, return its cached display label (e.g.
+/// `"Orchestrator (Argon)"`) so quota grouping sees the conductor name; for
+/// anything else, or when no cached label exists, return `model` unchanged.
+/// Impure (reads `~/.agy-mcp/models.json`).
+pub(crate) fn quota_label(model: &str) -> String {
+    if is_orchestrator(model) {
+        if let Some(label) = load_model_labels().get(model) {
+            return label.clone();
+        }
+    }
+    model.to_string()
+}
+
+/// A lite tier (`gemini-4-flash-lite-high`, "Gemini 4 Flash-Lite", or a codename
+/// line with a `lite` word): a different, cheaper model, never a slot's pick. Matched
+/// as a whole word so a name merely containing the letters is not caught. Pure.
+fn is_lite(lower: &str) -> bool {
+    lower
+        .split(|c: char| c == '-' || c == '(' || c == ')' || c.is_whitespace())
+        .any(|t| t == "lite")
+}
 
 /// Classify a model label into its slot (None = no `model=` slot: GPT-OSS, a lite
 /// tier, or a name the classifier doesn't know yet — still listed and still
@@ -156,7 +283,11 @@ const CODENAME_SLOTS: &[(&str, Slot)] = &[("argon", Slot::Pro), ("hydrogen", Slo
 /// ("gemini-3.6-flash-high", as listed by `agy models` / passed to `--model`).
 pub fn slot_of(label: &str) -> Option<Slot> {
     let l = label.to_ascii_lowercase();
-    if l.contains("gpt-oss") || l.contains("gpt_oss") {
+    if l.contains("gpt-oss") || l.contains("gpt_oss") || is_orchestrator(&l) {
+        None
+    } else if l.contains("gemini") && is_lite(&l) {
+        // Before the codename rows: `gemini-4-hydrogen-lite-*` would match `hydrogen`
+        // and land in Flash, and `model=flash` could then pick the lite tier.
         None
     } else if l.contains("claude") {
         Some(Slot::Claude)
@@ -167,10 +298,10 @@ pub fn slot_of(label: &str) -> Option<Slot> {
         .find(|(name, _)| l.contains("gemini") && l.contains(name))
     {
         Some(*slot)
-    } else if l.contains("gemini") && l.contains("flash") && !l.contains("lite") {
-        // A Flash-Lite tier is a different model, not a cheaper effort of Flash:
-        // letting it into the Flash slot would let `model=flash` pick it whenever its
-        // version number is the newest.
+    } else if l.contains("gemini") && l.contains("flash") {
+        // A Flash-Lite tier is a different model, not a cheaper effort of Flash (it
+        // returned None above): letting it into the Flash slot would let `model=flash`
+        // pick it whenever its version number is the newest.
         Some(Slot::Flash)
     } else {
         None
@@ -256,10 +387,11 @@ pub fn family_key(label: &str) -> String {
     toks.join("-")
 }
 
-/// Headless model list via the `agy models` subcommand (stable machine slugs,
-/// e.g. "gemini-3.6-flash-high"). Zero quota, no TUI scrape — the robust primary
-/// source that replaces the ConPTY `/model` scrape for model discovery.
-pub fn list_model_slugs() -> anyhow::Result<Vec<String>> {
+/// Headless model list via the `agy models` subcommand (stable machine slugs +
+/// optional display labels, e.g. `("gemini-3.6-flash-high", Some("Gemini 3.6 Flash (High)"))`).
+/// Zero quota, no TUI scrape — the robust primary source that replaces the ConPTY `/model`
+/// scrape for model discovery.
+pub fn list_model_entries() -> anyhow::Result<Vec<(String, Option<String>)>> {
     let bin = agy_bin();
     let mut cmd = std::process::Command::new(&bin);
     cmd.arg("models")
@@ -280,14 +412,15 @@ pub fn list_model_slugs() -> anyhow::Result<Vec<String>> {
     if !out.status.success() {
         anyhow::bail!("`agy models` exited {:?}", out.status.code());
     }
-    let slugs: Vec<String> = String::from_utf8_lossy(&out.stdout)
+    let entries: Vec<(String, Option<String>)> = String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter_map(slug_from_models_line)
+        .filter_map(entry_from_models_line)
         .collect();
-    Ok(slugs)
+    Ok(entries)
 }
 
-/// One line of `agy models` → its machine slug, or None if the line isn't one.
+/// One line of `agy models` → `(slug, optional display label)`, or None if the line
+/// isn't one.
 ///
 /// agy prints `<slug>\t<display label>` (the label column was there on 2026-08-13;
 /// older builds printed the slug alone). Taking the field before the first TAB reads
@@ -306,21 +439,31 @@ pub fn list_model_slugs() -> anyhow::Result<Vec<String>> {
 /// the classifier has never seen). They used to be dropped here, which hid them from
 /// the model list and made `model_label` reject them. A slot-less row is accepted on
 /// the strength of agy's own label column; a bare slug-only line still needs a slot.
-pub(crate) fn slug_from_models_line(line: &str) -> Option<String> {
+pub(crate) fn entry_from_models_line(line: &str) -> Option<(String, Option<String>)> {
     let mut cols = line.split('\t');
     let slug = cols.next()?.trim();
-    let labelled = cols.next().is_some_and(|l| !l.trim().is_empty());
+    let label = cols
+        .next()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string);
     let well_formed = !slug.is_empty() && !slug.contains(char::is_whitespace);
-    (well_formed && (labelled || slot_of(slug).is_some())).then(|| slug.to_string())
+    (well_formed && (label.is_some() || slot_of(slug).is_some())).then(|| (slug.to_string(), label))
+}
+
+#[cfg(test)]
+pub(crate) fn slug_from_models_line(line: &str) -> Option<String> {
+    entry_from_models_line(line).map(|(slug, _)| slug)
 }
 
 /// Live model list from the headless `agy models` subcommand (stable machine
 /// slugs, zero quota). Updates the cache and returns a concise, slot-grouped
 /// summary plus the raw slugs.
 pub async fn live_models() -> (String, Vec<String>) {
-    match tokio::task::spawn_blocking(list_model_slugs).await {
-        Ok(Ok(slugs)) if !slugs.is_empty() => {
-            save_models_cache(&slugs);
+    match tokio::task::spawn_blocking(list_model_entries).await {
+        Ok(Ok(entries)) if !entries.is_empty() => {
+            let (slugs, labels) = split_model_entries(entries);
+            save_models_cache(&slugs, &labels);
             (format_models("agy models", &slugs, None), slugs)
         }
         _ => (
@@ -397,7 +540,15 @@ pub(crate) fn format_models(source: &str, labels: &[String], current: Option<&st
         aliases
             .iter()
             .filter(|(_, pick)| {
-                pick(f) && fams.iter().filter(|g| pick(g)).map(|g| g.ver).max() == Some(f.ver)
+                // Same rule as the resolvers (`preferred_line`): newest version, then
+                // the most preferred codename line at that version (D38).
+                let top = fams.iter().filter(|g| pick(g)).map(|g| g.ver).max();
+                let best = fams
+                    .iter()
+                    .filter(|g| pick(g) && Some(g.ver) == top)
+                    .map(|g| codename_rank(&g.base))
+                    .min();
+                pick(f) && Some(f.ver) == top && Some(codename_rank(&f.base)) == best
             })
             .map(|(name, _)| *name)
             .collect()
@@ -934,5 +1085,73 @@ mod tests {
         assert!(err.contains("totally-unknown-model"));
         assert!(err.contains("not in agy's model catalog"));
         assert!(!err.contains("Available siblings"));
+    }
+
+    #[test]
+    fn slot_of_excludes_orchestrator_and_lite_and_codename_rank_orders_slots() {
+        assert_eq!(slot_of("gemini-pro-orchestrator-neon"), None);
+        assert_eq!(slot_of("gemini-pro-orchestrator-g1-pro"), None);
+        assert_eq!(slot_of("Orchestrator (Neon)"), None);
+        assert_eq!(slot_of("gemini-4-hydrogen-lite-high"), None);
+        assert_eq!(slot_of("gemini-4-carbon-high"), Some(Slot::Pro));
+        assert_eq!(slot_of("gemini-4-neon-high"), Some(Slot::Pro));
+        assert_eq!(slot_of("gemini-4-krypton-high"), None);
+
+        assert!(codename_rank("gemini-4-carbon-high") < codename_rank("gemini-4-argon-high"));
+        assert!(codename_rank("gemini-4-argon-high") < codename_rank("gemini-4-neon-high"));
+        assert!(codename_rank("gemini-4-neon-high") < codename_rank("gemini-4-hydrogen-high"));
+        assert_eq!(codename_rank("gemini-3.8-flash-high"), usize::MAX);
+    }
+
+    #[test]
+    fn entry_from_models_line_parses_slug_and_optional_label() {
+        assert_eq!(
+            entry_from_models_line("gemini-pro-orchestrator-g1-pro\tOrchestrator (Argon)"),
+            Some((
+                "gemini-pro-orchestrator-g1-pro".to_string(),
+                Some("Orchestrator (Argon)".to_string())
+            ))
+        );
+        assert_eq!(
+            entry_from_models_line("  gemini-3.1-pro-high\t Gemini 3.1 Pro (High) "),
+            Some((
+                "gemini-3.1-pro-high".to_string(),
+                Some("Gemini 3.1 Pro (High)".to_string())
+            ))
+        );
+        assert_eq!(
+            entry_from_models_line("claude-sonnet-4-6"),
+            Some(("claude-sonnet-4-6".to_string(), None))
+        );
+        assert_eq!(entry_from_models_line("gpt-oss-120b-medium"), None);
+        assert_eq!(entry_from_models_line("Fetching available models..."), None);
+    }
+
+    #[test]
+    fn conductor_of_extracts_orchestrator_conductor_only() {
+        assert_eq!(
+            conductor_of("Orchestrator (Argon)").as_deref(),
+            Some("argon")
+        );
+        assert_eq!(conductor_of("Orchestrator (Neon)").as_deref(), Some("neon"));
+        assert_eq!(conductor_of("Gemini 4 Argon (High)"), None);
+        assert_eq!(conductor_of("gemini-pro-orchestrator-g1-pro"), None);
+        assert_eq!(conductor_of("Orchestrator ()"), None);
+    }
+
+    #[test]
+    fn models_cache_is_stale_entry_flags_missing_labels() {
+        let now = 1_000_000u64;
+        let slugs = ["gemini-4-hydrogen-medium".to_string()];
+        assert!(models_cache_is_stale_entry(
+            Some((now - 60, &slugs, false)),
+            now
+        ));
+        assert!(!models_cache_is_stale_entry(
+            Some((now - 60, &slugs, true)),
+            now
+        ));
+        assert!(models_cache_is_stale_entry(Some((now, &[], true)), now));
+        assert!(models_cache_is_stale_entry(None, now));
     }
 }

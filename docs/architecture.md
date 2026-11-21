@@ -14,8 +14,8 @@ in `AGENTS.md` (`Critical invariants`).
   `punt_evidence`/`git_only_paths`/`norm_path_for_match`; `punt_nudge_text`;
   `rel_under_workspace`/`fmt_paths_capped_with_notes`; `looks_stray`/`stray_artifacts`; `outside_scope`; `missing_expected_files`;
   `resolve_gemini_from`/`resolve_claude_from` (newest version incl. a bare major, effort ladder);
-  `resume_keep_from` (a bare resume keeps a slot-less model by `family_key`);
-  `resolve_by_name`/`name_effort`/`claude_default_effort` (exact slug → family → the one line every word names; newest
+  `resume_keep_from`/`resume_keep_from_with` (a bare resume keeps a slot-less model by `family_key` and matches an orchestrator label via cached display labels);
+  `resolve_by_name`/`resolve_by_name_with`/`name_effort`/`claude_default_effort` (exact slug → family → the one line every word names, including display-label tokens; newest
   version; a named effort is exact; two lines is an error listing them; Sonnet defaults to low, Opus to medium).
   `no_default_model_text`/`default_model_line` (`AGY_DEFAULT_MODEL` → `flash` → refuse, never a guess).
 - `agy/run.rs` — `parse_agy_error` (last `AGY_ERROR:` line → `k=v`; exit 3 keeps the stdout fragment,
@@ -32,7 +32,7 @@ in `AGENTS.md` (`Critical invariants`).
   `first_meaningful_line` (GENERIC receipt vs. view_file content),
   `median_step_interval_s`/`recent_step_timestamps`/`last_step_line` (poll line step pace).
 - `agy/quota.rs` — `parse_usage_json`/`iso8601_utc_to_unix`/`parse_credits_json`, and the 429 cutoff's quota group and
-  alternative-group hint `resolve_quota_group`/`quota_group_of` (GPT-OSS → Claude bucket, an argon label → the optional `ARGON_GROUP`, never `GEMINI`; `parse_usage_json` reads `disabled` buckets; `unguarded_groups` names a `/usage` group with no `KNOWN_GROUPS` entry; `slot_of` + `CODENAME_SLOTS` (argon → `Pro`, hydrogen → `Flash`); the argon group is never "missing" and never `?` in `status_line`)/
+  alternative-group hint `resolve_quota_group`/`quota_group_of` (GPT-OSS → Claude bucket, an argon label or argon-conducted orchestrator → the optional `ARGON_GROUP`, other orchestrators → `GEMINI`; `parse_usage_json` reads `disabled` buckets; `unguarded_groups` names a `/usage` group with no `KNOWN_GROUPS` entry; `slot_of` + `CODENAME_SLOTS` (carbon, argon, neon → `Pro`, hydrogen → `Flash`; row order is the preference, `codename_rank`); `missing_groups` expects only groups some catalog model bills to; the argon group is never "missing" and never `?` in `status_line`)/
   `quota_alternative`/`other_quota_group` (a concrete catalog name: newest Sonnet / newest Flash line); the
   pre-flight guard `CachedPct::is_exhausted`/`exhausted_window`/`quota_unavailable` (both
   windows, `AGY_UNAVAILABLE:` head), `status_line` (the `instructions` line),
@@ -51,8 +51,8 @@ in `AGENTS.md` (`Critical invariants`).
 - `agy/permissions.rs` — `auto_grant_rule`, `merge_trusted_workspace`, `parse_permission_mode`,
   `verification_command_grants` (its patterns are matched against an RE2 engine, so a widened
   family or a lost anchor fails here instead of on a live run).
-- `agy/models.rs` — `slot_mismatch` (slot-less sides compared by `family_key`, vendor prefix only), `slot_of` (lite tier → no slot), `model_version` (dotted,
-  dash-split Claude, bare major `gemini-4-…`), `slug_from_models_line` (slot-less rows kept),
+- `agy/models.rs` — `slot_mismatch` (slot-less sides compared by `family_key`, vendor prefix only), `slot_of` (lite tier — checked before the codename rows — and Orchestrator lines → no slot), `model_version` (dotted,
+  dash-split Claude, bare major `gemini-4-…`), `entry_from_models_line`/`slug_from_models_line` (slug + optional display label; slot-less rows kept), `conductor_of` (orchestrator conductor in parentheses), `models_cache_is_stale_entry` (stale when slugs lack labels),
   `format_models` (one line per family, alias tags), `is_invalid_model_selection`, `wire_model`, `family_key`
   (slug and display label → one family name; `(Thinking)` kept).
 - `agy/jobobj.rs` (Windows only) — a real powershell + grandchild: dropping the job kills the grandchild, a disarmed job kills nothing.
